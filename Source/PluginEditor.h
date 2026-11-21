@@ -63,7 +63,7 @@ private:
         std::unique_ptr<SliderAttachment> attachment;
     };
 
-    void addKnob (Knob& k, const char* paramId, const char* text);
+    void addKnob (Knob& k, const char* paramId, const juce::String& text);
 
     NdmEventCleanerProcessor& proc;
     juce::TextButton captureButton { "Capture" };
@@ -73,10 +73,10 @@ private:
     juce::Label statusLabel;
     WaveformView waveform;
 
-    Knob sibSens, sibStrength, breathReduce, playheadOffset;
-    juce::ToggleButton sibTameToggle { "Tame Peaks" };
-    std::unique_ptr<ButtonAttachment> sibTameAttachment;
-    juce::ToggleButton soloToggle { "Solo ce qui est retiré" };
+    Knob sibSens, sibStrength, hardSens, hardStrength, breathReduce, playheadOffset;
+    juce::ToggleButton sibTameToggle { "Tame Peaks" }, hardTameToggle { "Tame Peaks" };
+    std::unique_ptr<ButtonAttachment> sibTameAttachment, hardTameAttachment;
+    juce::ToggleButton soloToggle { juce::String::fromUTF8 ("Solo ce qui est retiré") };
     std::unique_ptr<ButtonAttachment> soloAttachment;
 
     // panneau de l'événement sélectionné

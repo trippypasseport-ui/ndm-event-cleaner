@@ -11,7 +11,10 @@
 
 namespace ndm
 {
-enum class EventType : int { Sibilance = 0, Breath = 1 };
+enum class EventType : int { Sibilance = 0, Breath = 1, HardCons = 2 };
+
+// bit du bouton de type dans l'interface (1 = sibilance, 2 = consonnes dures, 4 = respiration)
+inline int modeBit (EventType t) { return t == EventType::Sibilance ? 1 : (t == EventType::HardCons ? 2 : 4); }
 
 struct Event
 {
@@ -28,6 +31,7 @@ struct EventList
     int64_t lengthSamples = 0;         // longueur de la zone capturée
     std::vector<Event> events;         // triés par startSample
     std::vector<float> sibPeaksSorted; // pour le seuil par percentile (lecture O(1))
+    std::vector<float> hardPeaksSorted;
     int64_t maxSpanSamples = 0;
 
     // Aperçu de forme d'onde pour l'interface : min/max par bloc de overviewHop échantillons
@@ -43,13 +47,16 @@ struct EventList
         std::sort (events.begin(), events.end(),
                    [] (const Event& a, const Event& b) { return a.startSample < b.startSample; });
         sibPeaksSorted.clear();
+        hardPeaksSorted.clear();
         maxSpanSamples = 0;
         for (auto& e : events)
         {
             maxSpanSamples = std::max (maxSpanSamples, e.endSample - e.startSample);
             if (e.type == EventType::Sibilance) sibPeaksSorted.push_back (e.peakDb);
+            else if (e.type == EventType::HardCons) hardPeaksSorted.push_back (e.peakDb);
         }
         std::sort (sibPeaksSorted.begin(), sibPeaksSorted.end());
+        std::sort (hardPeaksSorted.begin(), hardPeaksSorted.end());
         const size_t n = events.size();
         userOffsetDb.reset (new std::atomic<float>[n == 0 ? 1 : n]);
         enabled.reset (new std::atomic<bool>[n == 0 ? 1 : n]);
@@ -57,13 +64,14 @@ struct EventList
     }
 
     // Niveau (dB) au percentile p (0..100) parmi les sibilances : au-dessus, on réduit.
-    float sibTargetDb (float percentile) const
+    static float percentileOf (const std::vector<float>& v, float percentile)
     {
-        if (sibPeaksSorted.empty()) return 0.0f;
+        if (v.empty()) return 0.0f;
         const float p = std::min (100.0f, std::max (0.0f, percentile)) * 0.01f;
-        const size_t i = (size_t) std::lround (p * (float) (sibPeaksSorted.size() - 1));
-        return sibPeaksSorted[i];
+        return v[(size_t) std::lround (p * (float) (v.size() - 1))];
     }
+    float sibTargetDb (float percentile) const  { return percentileOf (sibPeaksSorted, percentile); }
+    float hardTargetDb (float percentile) const { return percentileOf (hardPeaksSorted, percentile); }
 };
 
 struct GainSettings
@@ -72,17 +80,25 @@ struct GainSettings
     float sibMaxDb = 8.0f;          // plafond de réduction automatique par événement
     float sibPercentile = 70.0f;    // les sibilances sous ce percentile ne sont pas touchées
     float breathReductionDb = 0.0f; // 0 = respirations intactes
-    float preMs = 10.0f;            // fondu d'entrée
+    float preMs = 10.0f;            // fondu d'entrée (sibilance, respiration)
     float postMs = 25.0f;           // fondu de sortie
+    // consonnes dures : creux large bande très court (le burst dure quelques ms)
+    float hardDepth = 1.0f;
+    float hardMaxDb = 6.0f;
+    float hardPercentile = 70.0f;
+    float hardPreMs = 2.0f;
+    float hardPostMs = 12.0f;
 };
 
-inline float reductionDb (const EventList& L, size_t idx, const GainSettings& s, float sibTarget)
+inline float reductionDb (const EventList& L, size_t idx, const GainSettings& s)
 {
     if (! L.enabled[idx].load (std::memory_order_relaxed)) return 0.0f;
     const Event& e = L.events[idx];
     float base = 0.0f;
     if (e.type == EventType::Sibilance)
-        base = std::min (s.sibMaxDb, std::max (0.0f, e.peakDb - sibTarget)) * s.sibDepth;
+        base = std::min (s.sibMaxDb, std::max (0.0f, e.peakDb - L.sibTargetDb (s.sibPercentile))) * s.sibDepth;
+    else if (e.type == EventType::HardCons)
+        base = std::min (s.hardMaxDb, std::max (0.0f, e.peakDb - L.hardTargetDb (s.hardPercentile))) * s.hardDepth;
     else
         base = s.breathReductionDb;
     const float r = base + L.userOffsetDb[idx].load (std::memory_order_relaxed);
@@ -97,10 +113,13 @@ inline void evaluateGains (const EventList& L, const GainSettings& s, double sam
     for (int i = 0; i < n; ++i) { sibGain[i] = 1.0f; breathGain[i] = 1.0f; }
     if (L.events.empty()) return;
 
-    const int64_t pre  = (int64_t) (s.preMs  * 0.001 * sampleRate);
-    const int64_t post = (int64_t) (s.postMs * 0.001 * sampleRate);
+    const int64_t preS  = (int64_t) (s.preMs  * 0.001 * sampleRate);
+    const int64_t postS = (int64_t) (s.postMs * 0.001 * sampleRate);
+    const int64_t preH  = (int64_t) (s.hardPreMs  * 0.001 * sampleRate);
+    const int64_t postH = (int64_t) (s.hardPostMs * 0.001 * sampleRate);
+    const int64_t pre  = std::max (preS, preH);     // bornes de recherche : le plus large des fondus
+    const int64_t post = std::max (postS, postH);
     const int64_t t1 = t0 + n;
-    const float sibTarget = L.sibTargetDb (s.sibPercentile);
 
     // premier événement pouvant encore chevaucher t0 (début >= t0 - durée max - fondu de sortie)
     const int64_t lowBound = t0 - L.maxSpanSamples - post;
@@ -114,19 +133,22 @@ inline void evaluateGains (const EventList& L, const GainSettings& s, double sam
         if (e.startSample - pre >= t1) break;
         if (e.endSample + post <= t0) continue;
 
-        const float r = reductionDb (L, i, s, sibTarget);
+        const float r = reductionDb (L, i, s);
         if (r < 0.01f) continue;
 
+        // sibilance : gain sur la bande ; respiration et consonnes dures : gain large bande
         float* out = (e.type == EventType::Sibilance) ? sibGain : breathGain;
-        const int64_t a = std::max<int64_t> (t0, e.startSample - pre);
-        const int64_t b = std::min<int64_t> (t1, e.endSample + post);
+        const bool hard = e.type == EventType::HardCons;
+        const int64_t ePre = hard ? preH : preS, ePost = hard ? postH : postS;
+        const int64_t a = std::max<int64_t> (t0, e.startSample - ePre);
+        const int64_t b = std::min<int64_t> (t1, e.endSample + ePost);
         for (int64_t t = a; t < b; ++t)
         {
             float shape = 1.0f;
-            if (t < e.startSample && pre > 0)
-                shape = 0.5f - 0.5f * std::cos (3.14159265f * (float) (t - (e.startSample - pre)) / (float) pre);
-            else if (t > e.endSample && post > 0)
-                shape = 0.5f + 0.5f * std::cos (3.14159265f * (float) (t - e.endSample) / (float) post);
+            if (t < e.startSample && ePre > 0)
+                shape = 0.5f - 0.5f * std::cos (3.14159265f * (float) (t - (e.startSample - ePre)) / (float) ePre);
+            else if (t > e.endSample && ePost > 0)
+                shape = 0.5f + 0.5f * std::cos (3.14159265f * (float) (t - e.endSample) / (float) ePost);
             const float g = std::exp (-r * shape * kLn10Over20);
             float& slot = out[t - t0];
             if (g < slot) slot = g;

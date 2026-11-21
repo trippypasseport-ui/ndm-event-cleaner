@@ -58,8 +58,8 @@ int main (int argc, char** argv)
     list->finalise();
     ndm::GainSettings gs; // défauts : percentile 70, max 8 dB
     std::printf ("événements : %zu ; seuil (percentile 70) = %.1f dB ; réduits : ", list->events.size(), list->sibTargetDb (70.0f));
-    int nred = 0; float maxr = 0, sumr = 0; const float tgt = list->sibTargetDb (gs.sibPercentile);
-    for (size_t i = 0; i < list->events.size(); ++i) { float r = ndm::reductionDb (*list, i, gs, tgt); if (r > 0.5f) { ++nred; sumr += r; maxr = std::max (maxr, r); } }
+    int nred = 0; float maxr = 0, sumr = 0; 
+    for (size_t i = 0; i < list->events.size(); ++i) { float r = ndm::reductionDb (*list, i, gs); if (r > 0.5f) { ++nred; sumr += r; maxr = std::max (maxr, r); } }
     std::printf ("%d (moy %.1f dB, max %.1f dB)\n", nred, nred ? sumr / nred : 0.f, maxr);
 
     std::vector<float> y (x.size() + (size_t) K, 0.0f); std::copy (x.begin(), x.end(), y.begin());

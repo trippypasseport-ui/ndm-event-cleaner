@@ -25,6 +25,12 @@ struct DetectorConfig
     float breathMinFlatness = 0.02f;
     double breathMinDurSec = 0.15, breathMaxDurSec = 1.0;
     double mergeGapSec = 0.03, breathMergeGapSec = 0.06;
+    // Consonnes dures (burst de P/T/K/B/D) : montée brutale de l'énergie > 2.5 kHz, puis retombée rapide
+    // (un burst NE se maintient PAS : c'est ce qui le distingue d'une sibilance).
+    float hardRiseDb = 12.0f;        // fenêtre de 2 ms contre les 20 ms qui précèdent
+    float hardMinLevelDb = -52.0f;   // niveau minimal (RMS 2 ms, bande > 2.5 kHz)
+    float hardSustainDropDb = 9.0f;  // 20-40 ms après le pic, l'énergie doit être tombée d'au moins ça
+    double hardMaxDurSec = 0.035, hardRefractorySec = 0.08;
 };
 
 class EventDetector
@@ -200,7 +206,77 @@ public:
             e.peakDb = peak;
             out.push_back (e);
         }
+        detectHardConsonants (x, n, sr, originSample, cfg, cancel, out);
         return out;
+    }
+
+private:
+    // Détection temporelle (échantillon par échantillon, sommes cumulées => O(n)).
+    static void detectHardConsonants (const float* x, int64_t n, double sr, int64_t originSample,
+                                      const DetectorConfig& cfg, const std::atomic<bool>* cancel,
+                                      std::vector<Event>& out)
+    {
+        // passe-haut 2.5 kHz (biquad RBJ, Q = 0.707), énergie instantanée
+        const double w0 = 2.0 * kPi * 2500.0 / sr, cw = std::cos (w0), sw = std::sin (w0);
+        const double alpha = sw / (2.0 * 0.70710678);
+        const double a0 = 1.0 + alpha;
+        const double b0 = (1.0 + cw) * 0.5 / a0, b1 = -(1.0 + cw) / a0, b2 = b0;
+        const double a1 = -2.0 * cw / a0, a2 = (1.0 - alpha) / a0;
+        std::vector<double> cs ((size_t) n + 1, 0.0);
+        double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+        for (int64_t i = 0; i < n; ++i)
+        {
+            const double xi = (double) x[i];
+            const double y = b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            x2 = x1; x1 = xi; y2 = y1; y1 = y;
+            cs[(size_t) i + 1] = cs[(size_t) i] + y * y;
+        }
+        auto mean = [&] (int64_t a, int64_t b) -> double      // énergie moyenne sur [a, b)
+        {
+            a = std::max<int64_t> (0, a); b = std::min<int64_t> (n, b);
+            return b > a ? (cs[(size_t) b] - cs[(size_t) a]) / (double) (b - a) : 0.0;
+        };
+
+        const int64_t w2 = std::max<int64_t> (4, (int64_t) (0.002 * sr));
+        const int64_t preLen = (int64_t) (0.020 * sr), gap = w2;
+        const double riseLin = std::pow (10.0, cfg.hardRiseDb / 10.0);
+        const double minEnergy = std::pow (10.0, cfg.hardMinLevelDb / 10.0);
+        const double dropLin = std::pow (10.0, -cfg.hardSustainDropDb / 10.0);
+        const int64_t refractory = (int64_t) (cfg.hardRefractorySec * sr);
+        const int64_t maxDur = (int64_t) (cfg.hardMaxDurSec * sr);
+
+        int64_t t = preLen + gap;
+        while (t < n - 2 * w2)
+        {
+            if ((t & 0x3fff) == 0 && cancel && cancel->load()) return;
+            const double fast = mean (t, t + w2);
+            if (fast < minEnergy || fast < riseLin * mean (t - gap - preLen, t - gap)) { ++t; continue; }
+
+            // pic de l'énergie sur les 15 ms qui suivent
+            int64_t peakPos = t; double peak = fast;
+            const int64_t scanEnd = std::min (n - w2, t + (int64_t) (0.015 * sr));
+            for (int64_t u = t; u < scanEnd; ++u)
+            {
+                const double e = mean (u, u + w2);
+                if (e > peak) { peak = e; peakPos = u; }
+            }
+            // sustain : 20-40 ms après le pic, l'énergie doit être retombée (sinon : fricative, pas un burst)
+            const double later = mean (peakPos + (int64_t) (0.020 * sr), peakPos + (int64_t) (0.040 * sr));
+            if (later > peak * dropLin) { t += (int64_t) (0.010 * sr); continue; }
+
+            // fin : l'énergie passe 12 dB sous le pic (borné)
+            int64_t endPos = peakPos + w2;
+            const int64_t endLim = std::min (n - w2, peakPos + maxDur);
+            while (endPos < endLim && mean (endPos, endPos + w2) > peak * 0.0631) endPos += w2 / 2;
+
+            Event e;
+            e.type = EventType::HardCons;
+            e.startSample = originSample + std::max<int64_t> (0, t - (int64_t) (0.001 * sr));
+            e.endSample = originSample + endPos;
+            e.peakDb = (float) (10.0 * std::log10 (peak + 1e-18));
+            out.push_back (e);
+            t = endPos + refractory;
+        }
     }
 };
 } // namespace ndm

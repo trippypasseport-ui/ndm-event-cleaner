@@ -24,7 +24,7 @@ Conçu à partir des principes publics de ce type d'outil (détection d'événem
 3. Les marqueurs apparaissent. Comme dans IcePick, **un bouton par type d'événement** (SIBILANCE, HARD CONS, BREATH) :
    un clic isole ce type (ses marqueurs et ses réglages seulement), **Maj-clic combine** plusieurs types. Rejoue : les événements sont traités.
    Chaque type a sa propre réduction, indépendante des autres. (HARD CONS est grisé : prévu en v1.1.)
-4. Réglages du type actif — Sibilance : bouton **Tame Peaks** (actif/inactif), **SENS** (combien : % des sibilances les plus fortes touchées, 30 % par défaut) et **STR** (intensité : 100 % = 12 dB de réduction max, 67 % ≈ 8 dB par défaut) ; Respiration : **Breath Reduction** (dB). La ligne d'état indique « N/M marqueurs réduits » ;
+4. Réglages du type actif — Sibilance : bouton **Tame Peaks** (actif/inactif), **SENS** (combien : % des sibilances les plus fortes touchées, 30 % par défaut) et **STR** (intensité : 100 % = 12 dB de réduction max, 67 % ≈ 8 dB par défaut) ; Consonnes dures (HARD CONS, v1.1) : mêmes **Tame Peaks / SENS / STR** (STR 100 % = 12 dB, creux large bande de quelques ms sur le burst) ; Respiration : **Breath Reduction** (dB). La ligne d'état indique « N/M marqueurs réduits » ;
    Breath : **Reduction** ; toujours : **Playhead Offset** (recalage manuel en ms). **Solo ce qui est retiré** fait entendre la différence.
 5. Clique un marqueur pour modifier cet événement seul (offset en dB, actif/inactif). Molette = zoom, glisser = défiler.
 
@@ -53,7 +53,7 @@ g++ -O2 -std=c++17 -o render_test tests/render_test.cpp
 
 ## Feuille de route
 
-- v1 (ce dépôt) : Capture, sibilances, respirations, Tame Peaks, édition par événement.
+- v1.1 (ce dépôt) : Capture, sibilances, respirations, consonnes dures (bursts > 2,5 kHz), Tame Peaks SENS/STR par type, édition par événement. Pas encore : EQ par événement, pops graves (< 150 Hz).
 - v1.1 : Hard Consonants (plosives : la voix testée en avait peu), EQ par événement.
 - v1.2 : Shift de formants, Swap (remplacer une sibilance par une plus propre de la même prise ; la prise testée contient des passages répétés).
 - v1.3 : bruits ponctuels dans les pauses (pas, vêtements) en option.

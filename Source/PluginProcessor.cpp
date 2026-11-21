@@ -21,6 +21,9 @@ NdmEventCleanerProcessor::NdmEventCleanerProcessor()
     sibTameParam        = apvts.getRawParameterValue ("sibTame");
     sibSensParam        = apvts.getRawParameterValue ("sibSens");
     sibStrengthParam    = apvts.getRawParameterValue ("sibStrength");
+    hardTameParam       = apvts.getRawParameterValue ("hardTame");
+    hardSensParam       = apvts.getRawParameterValue ("hardSens");
+    hardStrengthParam   = apvts.getRawParameterValue ("hardStrength");
     breathReduceParam   = apvts.getRawParameterValue ("breathReduce");
     playheadOffsetParam = apvts.getRawParameterValue ("playheadOffsetMs");
     soloParam           = apvts.getRawParameterValue ("soloRemoved");
@@ -37,21 +40,32 @@ juce::AudioProcessorValueTreeState::ParameterLayout NdmEventCleanerProcessor::cr
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    auto addFloat = [&params] (const char* id, const char* name, float minV, float maxV, float defV)
+    // unité et nombre de décimales affichés (sans ça Logic montre 64.9890518)
+    auto addFloat = [&params] (const char* id, const char* name, float minV, float maxV, float defV,
+                               const char* unit, int decimals)
     {
+        const juce::String u (unit);
         params.push_back (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { id, 1 }, name, juce::NormalisableRange<float> (minV, maxV), defV));
+            juce::ParameterID { id, 1 }, name, juce::NormalisableRange<float> (minV, maxV), defV,
+            juce::AudioParameterFloatAttributes()
+                .withStringFromValueFunction ([u, decimals] (float v, int) { return juce::String (v, decimals) + u; })
+                .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue(); })));
+    };
+    auto addToggle = [&params] (const char* id, const char* name, bool defV)
+    {
+        params.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, 1 }, name, defV));
     };
 
-    // Tame Peaks, sibilance : SENS = combien d'événements (les plus forts), STR = de combien on les réduit
-    params.push_back (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { "sibTame", 1 }, "Tame Peaks (Sibilance)", true));
-    addFloat ("sibSens",          "Sibilance SENS",      0.0f, 100.0f, 30.0f);  // 30 % des plus forts (= percentile 70)
-    addFloat ("sibStrength",      "Sibilance STR",       0.0f, 100.0f, 67.0f);  // 67 % de 12 dB = 8 dB max
-    addFloat ("breathReduce",     "Breath Reduction (dB)",0.0f, 24.0f, 0.0f);
-    addFloat ("playheadOffsetMs", "Playhead Offset (ms)",-200.0f, 200.0f, 0.0f);
-    params.push_back (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { "soloRemoved", 1 }, "Solo Removed", false));
+    // Tame Peaks par type : SENS = combien d'événements (les plus forts), STR = de combien on les réduit
+    addToggle ("sibTame",      "Tame Peaks (Sibilance)", true);
+    addFloat  ("sibSens",      "Sibilance SENS",   0.0f, 100.0f, 30.0f, " %", 0);   // 30 % des plus forts (= percentile 70)
+    addFloat  ("sibStrength",  "Sibilance STR",    0.0f, 100.0f, 67.0f, " %", 0);   // 67 % de 12 dB = 8 dB max
+    addToggle ("hardTame",     "Tame Peaks (Hard Cons)", true);
+    addFloat  ("hardSens",     "Hard Cons SENS",   0.0f, 100.0f, 30.0f, " %", 0);
+    addFloat  ("hardStrength", "Hard Cons STR",    0.0f, 100.0f, 50.0f, " %", 0);   // 50 % de 12 dB = 6 dB max
+    addFloat  ("breathReduce", "Breath Reduction (dB)", 0.0f, 24.0f, 0.0f, " dB", 1);
+    addFloat  ("playheadOffsetMs", "Playhead Offset (ms)", -200.0f, 200.0f, 0.0f, " ms", 1);
+    addToggle ("soloRemoved",  "Solo Removed", false);
 
     return { params.begin(), params.end() };
 }
@@ -62,6 +76,9 @@ ndm::GainSettings NdmEventCleanerProcessor::readGainSettings() const
     gs.sibDepth = sibTameParam->load() > 0.5f ? 1.0f : 0.0f;                 // Tame Peaks actif ou non
     gs.sibMaxDb = 12.0f * sibStrengthParam->load() * 0.01f;                  // STR : 100 % = 12 dB de réduction max
     gs.sibPercentile = 100.0f - sibSensParam->load();                         // SENS : % des plus forts touchés
+    gs.hardDepth = hardTameParam->load() > 0.5f ? 1.0f : 0.0f;
+    gs.hardMaxDb = 12.0f * hardStrengthParam->load() * 0.01f;
+    gs.hardPercentile = 100.0f - hardSensParam->load();
     gs.breathReductionDb = breathReduceParam->load();
     return gs;
 }

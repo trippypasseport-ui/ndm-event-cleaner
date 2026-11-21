@@ -66,6 +66,9 @@ private:
     std::atomic<float>* sibTameParam = nullptr;       // Tame Peaks activé pour la sibilance
     std::atomic<float>* sibSensParam = nullptr;       // SENS : % des sibilances les plus fortes touchées
     std::atomic<float>* sibStrengthParam = nullptr;   // STR : intensité (réduction max), 0..100
+    std::atomic<float>* hardTameParam = nullptr;      // Tame Peaks activé pour les consonnes dures
+    std::atomic<float>* hardSensParam = nullptr;
+    std::atomic<float>* hardStrengthParam = nullptr;
     std::atomic<float>* breathReduceParam = nullptr;
     std::atomic<float>* playheadOffsetParam = nullptr;
     std::atomic<float>* soloParam = nullptr;

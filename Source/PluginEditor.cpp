@@ -6,6 +6,20 @@ const juce::Colour kBg       { 0xff17181c };
 const juce::Colour kPanel    { 0xff202228 };
 const juce::Colour kSib      { 0xff4fd8e8 };
 const juce::Colour kBreath   { 0xff7be07b };
+const juce::Colour kHard     { 0xffffa04f };
+
+// Les littéraux avec accents sont de l'UTF-8 : juce::String (const char*) les lirait en Latin-1 (« rÃ©gler »).
+juce::String U8 (const char* s) { return juce::String::fromUTF8 (s); }
+
+juce::Colour typeColour (ndm::EventType t)
+{
+    return t == ndm::EventType::Sibilance ? kSib : (t == ndm::EventType::HardCons ? kHard : kBreath);
+}
+
+juce::String typeName (ndm::EventType t)
+{
+    return t == ndm::EventType::Sibilance ? U8 ("Sibilance") : (t == ndm::EventType::HardCons ? U8 ("Consonne dure") : U8 ("Respiration"));
+}
 const juce::Colour kWave     { 0xffb9bdc8 };
 const juce::Colour kPlayhead { 0xffffc857 };
 }
@@ -47,7 +61,7 @@ int WaveformView::eventAt (float x) const
     float bestDist = 6.0f; // tolérance en pixels
     for (size_t i = 0; i < L->events.size(); ++i)
     {
-        if (! (visibleMask & (L->events[i].type == ndm::EventType::Sibilance ? 1 : 4))) continue;
+        if (! (visibleMask & ndm::modeBit (L->events[i].type))) continue;
         const float a = xOf (L->events[i].startSample), b = xOf (L->events[i].endSample);
         if (b < -10.0f || a > (float) getWidth() + 10.0f) continue;
         const float d = (x < a) ? a - x : (x > b ? x - b : 0.0f);
@@ -68,11 +82,11 @@ void WaveformView::paint (juce::Graphics& g)
         g.setFont (15.0f);
         juce::String msg;
         if (state == NdmEventCleanerProcessor::CaptureState::Capturing)
-            msg = "Capture en cours...\nLance la lecture de la voix dans Logic, du début à la fin,\npuis clique sur \"Stop + Analyser\".";
+            msg = U8 ("Capture en cours...\nLance la lecture de la voix dans Logic, du début à la fin,\npuis clique sur \"Stop + Analyser\".");
         else if (state == NdmEventCleanerProcessor::CaptureState::Analysing)
             msg = "Analyse en cours...";
         else if (L != nullptr)
-            msg = "Aucun événement détecté dans cette prise.";
+            msg = U8 ("Aucun événement détecté dans cette prise.");
         else
             msg = "1) Clique sur \"Capture\"\n2) Lance la lecture de la voix dans Logic\n3) Clique sur \"Stop + Analyser\"";
         g.drawFittedText (msg, getLocalBounds().reduced (20), juce::Justification::centred, 5);
@@ -97,17 +111,15 @@ void WaveformView::paint (juce::Graphics& g)
 
     // événements
     const auto gs = proc.readGainSettings();
-    const float target = L->sibTargetDb (gs.sibPercentile);
     for (size_t i = 0; i < L->events.size(); ++i)
     {
         const auto& e = L->events[i];
-        const bool sib = e.type == ndm::EventType::Sibilance;
-        if (! (visibleMask & (sib ? 1 : 4))) continue;
+        if (! (visibleMask & ndm::modeBit (e.type))) continue;
         const float a = xOf (e.startSample), b = xOf (e.endSample);
         if (b < 0.0f || a > w) continue;
-        const float red = ndm::reductionDb (*L, i, gs, target);
+        const float red = ndm::reductionDb (*L, i, gs);
         const bool on = L->enabled[i].load();
-        const juce::Colour c = (sib ? kSib : kBreath).withAlpha (on ? 1.0f : 0.25f);
+        const juce::Colour c = typeColour (e.type).withAlpha (on ? 1.0f : 0.25f);
 
         const float bw = juce::jmax (2.0f, b - a);
         g.setColour (c.withAlpha (on ? 0.20f : 0.08f));
@@ -169,7 +181,7 @@ void WaveformView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseW
 }
 
 // =================================================================== éditeur
-void NdmEventCleanerEditor::addKnob (Knob& k, const char* paramId, const char* text)
+void NdmEventCleanerEditor::addKnob (Knob& k, const char* paramId, const juce::String& text)
 {
     k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 78, 18);
@@ -195,10 +207,11 @@ NdmEventCleanerEditor::NdmEventCleanerEditor (NdmEventCleanerProcessor& p)
     }
     sibModeButton.setColour (juce::TextButton::buttonOnColourId, kSib.darker (0.4f));
     breathModeButton.setColour (juce::TextButton::buttonOnColourId, kBreath.darker (0.4f));
+    hardModeButton.setColour (juce::TextButton::buttonOnColourId, kHard.darker (0.4f));
     sibModeButton.onClick    = [this] { onModeClicked (1); };
+    hardModeButton.onClick   = [this] { onModeClicked (2); };
     breathModeButton.onClick = [this] { onModeClicked (4); };
-    hardModeButton.setEnabled (false);   // Hard Consonants : v1.1 (détection + traitement pas encore conçus)
-    hardModeButton.setButtonText ("HARD CONS (v1.1)");
+    hardModeButton.setButtonText ("HARD CONS");
 
     statusLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (statusLabel);
@@ -206,10 +219,14 @@ NdmEventCleanerEditor::NdmEventCleanerEditor (NdmEventCleanerProcessor& p)
     waveform.onSelectionChanged = [this] (int idx) { selectionChanged (idx); };
 
     addKnob (sibSens,        "sibSens",          "SENS (combien)");
-    addKnob (sibStrength,    "sibStrength",      "STR (intensité)");
+    addKnob (sibStrength,    "sibStrength",      U8 ("STR (intensité)"));
+    addKnob (hardSens,       "hardSens",         "SENS (combien)");
+    addKnob (hardStrength,   "hardStrength",     U8 ("STR (intensité)"));
     addKnob (breathReduce,   "breathReduce",     "Breath Reduction");
     addAndMakeVisible (sibTameToggle);
-    sibTameAttachment = std::make_unique<ButtonAttachment> (proc.apvts, "sibTame", sibTameToggle);
+    addAndMakeVisible (hardTameToggle);
+    sibTameAttachment  = std::make_unique<ButtonAttachment> (proc.apvts, "sibTame", sibTameToggle);
+    hardTameAttachment = std::make_unique<ButtonAttachment> (proc.apvts, "hardTame", hardTameToggle);
     addKnob (playheadOffset, "playheadOffsetMs", "Playhead Offset");
 
     addAndMakeVisible (soloToggle);
@@ -272,6 +289,7 @@ void NdmEventCleanerEditor::onModeClicked (int bit)
 void NdmEventCleanerEditor::applyModes()
 {
     sibModeButton.setToggleState ((activeModes & 1) != 0, juce::dontSendNotification);
+    hardModeButton.setToggleState ((activeModes & 2) != 0, juce::dontSendNotification);
     breathModeButton.setToggleState ((activeModes & 4) != 0, juce::dontSendNotification);
     waveform.setVisibleMask (activeModes);
 
@@ -280,7 +298,7 @@ void NdmEventCleanerEditor::applyModes()
     const int sel = waveform.getSelected();
     if (L != nullptr && sel >= 0 && sel < (int) L->events.size())
     {
-        const int bit = L->events[(size_t) sel].type == ndm::EventType::Sibilance ? 1 : 4;
+        const int bit = ndm::modeBit (L->events[(size_t) sel].type);
         if (! (activeModes & bit)) { waveform.clearSelection(); refreshSelectionPanel(); }
     }
     resized();
@@ -301,14 +319,13 @@ void NdmEventCleanerEditor::refreshSelectionPanel()
     eventEnabled.setEnabled (valid);
     if (! valid)
     {
-        eventInfo.setText ("Clique sur un marqueur pour régler cet événement seul.", juce::dontSendNotification);
+        eventInfo.setText (U8 ("Clique sur un marqueur pour régler cet événement seul."), juce::dontSendNotification);
         eventOffset.setValue (0.0, juce::dontSendNotification);
         return;
     }
     const auto& e = L->events[(size_t) sel];
     const double t = (double) e.startSample / L->sampleRate;
-    juce::String txt = juce::String (e.type == ndm::EventType::Sibilance ? "Sibilance" : "Respiration")
-                       + " à " + juce::String (t, 2) + " s  -  pic " + juce::String (e.peakDb, 1) + " dB";
+    juce::String txt = typeName (e.type) + U8 (" à ") + juce::String (t, 2) + " s  -  pic " + juce::String (e.peakDb, 1) + " dB";
     eventInfo.setText (txt, juce::dontSendNotification);
     eventOffset.setValue (L->userOffsetDb[(size_t) sel].load(), juce::dontSendNotification);
     eventEnabled.setToggleState (L->enabled[(size_t) sel].load(), juce::dontSendNotification);
@@ -325,29 +342,33 @@ void NdmEventCleanerEditor::timerCallback()
 
     if (const auto* L = proc.getEventList())
     {
-        int sibN = 0, brN = 0;
-        for (auto& e : L->events) (e.type == ndm::EventType::Sibilance ? sibN : brN)++;
+        int sibN = 0, hardN = 0, brN = 0;
+        for (auto& e : L->events)
+            (e.type == ndm::EventType::Sibilance ? sibN : (e.type == ndm::EventType::HardCons ? hardN : brN))++;
         sibModeButton.setButtonText ("SIBILANCE (" + juce::String (sibN) + ")");
+        hardModeButton.setButtonText ("HARD CONS (" + juce::String (hardN) + ")");
         breathModeButton.setButtonText ("BREATH (" + juce::String (brN) + ")");
     }
 
     juce::String status;
     if (st == S::Capturing) status = proc.isHostPlaying() ? "Capture : enregistrement de la lecture..." : "Capture : en attente de la lecture (lance Play dans Logic)";
-    else if (st == S::Analysing) status = "Analyse hors temps réel en cours (quelques dizaines de secondes pour une prise de 2-3 min)";
+    else if (st == S::Analysing) status = U8 ("Analyse hors temps réel en cours (quelques dizaines de secondes pour une prise de 2-3 min)");
     else if (const auto* L = proc.getEventList())
     {
-        int sib = 0, br = 0;
-        for (auto& e : L->events) (e.type == ndm::EventType::Sibilance ? sib : br)++;
+        int tot[3] = { 0, 0, 0 }, cut[3] = { 0, 0, 0 };
         const auto gs = proc.readGainSettings();
-        const float tgt = L->sibTargetDb (gs.sibPercentile);
-        int sibCut = 0, brCut = 0;
         for (size_t i = 0; i < L->events.size(); ++i)
-            if (ndm::reductionDb (*L, i, gs, tgt) > 0.5f)
-                (L->events[i].type == ndm::EventType::Sibilance ? sibCut : brCut)++;
-        status = "Sibilance : " + juce::String (sibCut) + "/" + juce::String (sib) + " marqueurs réduits  |  Respiration : "
-                 + juce::String (brCut) + "/" + juce::String (br) + "  |  molette : zoom, glisser : défiler, Maj-clic : combiner les types";
+        {
+            const int k = (int) L->events[i].type;     // 0 sibilance, 1 respiration, 2 consonne dure
+            ++tot[k];
+            if (ndm::reductionDb (*L, i, gs) > 0.5f) ++cut[k];
+        }
+        status = "Sibilance : " + juce::String (cut[0]) + "/" + juce::String (tot[0]) + U8 (" réduits  |  Hard Cons : ")
+                 + juce::String (cut[2]) + "/" + juce::String (tot[2]) + U8 ("  |  Respiration : ")
+                 + juce::String (cut[1]) + "/" + juce::String (tot[1])
+                 + U8 ("  |  molette : zoom, glisser : défiler, Maj-clic : combiner les types");
     }
-    else status = "Pas de capture dans cette instance.";
+    else status = U8 ("Pas de capture dans cette instance.");
     statusLabel.setText (status, juce::dontSendNotification);
 
     const int v = proc.getListVersion();
@@ -369,7 +390,7 @@ void NdmEventCleanerEditor::paint (juce::Graphics& g)
     g.drawText ("NDM Event Cleaner", 16, 8, 300, 28, juce::Justification::centredLeft);
     g.setFont (12.0f);
     g.setColour (juce::Colours::white.withAlpha (0.5f));
-    g.drawText ("nom de travail - nettoyage de voix par événements", 16, 32, 400, 16, juce::Justification::centredLeft);
+    g.drawText (U8 ("nom de travail - nettoyage de voix par événements"), 16, 32, 400, 16, juce::Justification::centredLeft);
 }
 
 void NdmEventCleanerEditor::resized()
@@ -400,14 +421,18 @@ void NdmEventCleanerEditor::resized()
     };
     show (sibSens,      (activeModes & 1) != 0);
     show (sibStrength,  (activeModes & 1) != 0);
+    show (hardSens,     (activeModes & 2) != 0);
+    show (hardStrength, (activeModes & 2) != 0);
     show (breathReduce, (activeModes & 4) != 0);
     show (playheadOffset, true);
 
-    const bool sibActive = (activeModes & 1) != 0;
+    const bool sibActive = (activeModes & 1) != 0, hardActive = (activeModes & 2) != 0;
     sibTameToggle.setVisible (sibActive);
-    const int kw = juce::jmin (150, knobs.getWidth() / (int) (shown.size() + 2));
-    if (sibActive)
-        sibTameToggle.setBounds (knobs.removeFromLeft (kw).reduced (4, 50));
+    hardTameToggle.setVisible (hardActive);
+    const int nToggles = (sibActive ? 1 : 0) + (hardActive ? 1 : 0);
+    const int kw = juce::jmin (150, knobs.getWidth() / (int) (shown.size() + nToggles + 1));
+    if (sibActive)  sibTameToggle.setBounds  (knobs.removeFromLeft (kw).reduced (4, 50));
+    if (hardActive) hardTameToggle.setBounds (knobs.removeFromLeft (kw).reduced (4, 50));
     for (auto* k : shown)
     {
         auto cell = knobs.removeFromLeft (kw);
