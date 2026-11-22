@@ -97,9 +97,9 @@ void WaveformView::paint (juce::Graphics& g)
 
     // forme d'onde (min/max par pixel, depuis l'aperçu)
     g.setColour (kWave.withAlpha (0.75f));
-    const int hop = L->overviewHop;
-    const int nOv = (int) L->overviewMin.size();
-    for (int px = 0; px < (int) w; ++px)
+    const int hop = juce::jmax (1, L->overviewHop);
+    const int nOv = (int) juce::jmin (L->overviewMin.size(), L->overviewMax.size());
+    for (int px = 0; px < (nOv > 0 ? (int) w : 0); ++px)   // aperçu absent (état de session tronqué) : pas de forme d'onde, mais pas de plantage
     {
         const int64_t s0 = sampleAt ((float) px) - L->firstSample, s1 = sampleAt ((float) px + 1.0f) - L->firstSample;
         int b0 = (int) juce::jlimit<int64_t> (0, nOv - 1, s0 / hop), b1 = (int) juce::jlimit<int64_t> (0, nOv - 1, s1 / hop);
@@ -353,6 +353,9 @@ void NdmEventCleanerEditor::timerCallback()
     juce::String status;
     if (st == S::Capturing) status = proc.isHostPlaying() ? "Capture : enregistrement de la lecture..." : "Capture : en attente de la lecture (lance Play dans Logic)";
     else if (st == S::Analysing) status = U8 ("Analyse hors temps réel en cours (quelques dizaines de secondes pour une prise de 2-3 min)");
+    else if (const auto* L = proc.getEventList(); L != nullptr && std::abs (L->sampleRate - proc.getSampleRate()) >= 0.5)
+        status = U8 ("Capture faite à ") + juce::String (L->sampleRate, 0) + U8 (" Hz, projet à ") + juce::String (proc.getSampleRate(), 0)
+                 + U8 (" Hz : événements désactivés, refais une Capture.");
     else if (const auto* L = proc.getEventList())
     {
         int tot[3] = { 0, 0, 0 }, cut[3] = { 0, 0, 0 };

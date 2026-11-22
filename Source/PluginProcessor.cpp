@@ -150,6 +150,8 @@ void NdmEventCleanerProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
 
     // ---- Traitement ----
     const ndm::EventList* list = currentList.load (std::memory_order_acquire);
+    // positions en échantillons : inutilisables si la fréquence d'échantillonnage du projet a changé depuis la capture
+    const bool listUsable = list != nullptr && std::abs (list->sampleRate - sampleRate_) < 0.5;
     const ndm::GainSettings gs = readGainSettings();
     const bool solo = soloParam->load() > 0.5f;
     const int64_t offset = (int64_t) (playheadOffsetParam->load() * 0.001 * sampleRate_);
@@ -158,7 +160,7 @@ void NdmEventCleanerProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     while (done < numSamples)
     {
         const int n = juce::jmin (numSamples - done, (int) sibGain.size());
-        if (list != nullptr && havePos && playing)
+        if (list != nullptr && listUsable && havePos && playing)
             ndm::evaluateGains (*list, gs, sampleRate_, hostPos + done - latencySamples_ + offset,
                                 n, sibGain.data(), breathGain.data());
         else
@@ -168,6 +170,26 @@ void NdmEventCleanerProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         }
         for (int ch = 0; ch < numCh; ++ch)
             engines[(size_t) ch].process (buffer.getWritePointer (ch) + done, n, sibGain.data(), breathGain.data(), solo);
+        done += n;
+    }
+}
+
+void NdmEventCleanerProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+{
+    juce::ScopedNoDenormals noDenormals;
+    const int numSamples = buffer.getNumSamples();
+    const int numCh = juce::jmin (buffer.getNumChannels(), (int) engines.size());
+    for (int ch = getTotalNumInputChannels(); ch < buffer.getNumChannels(); ++ch)
+        buffer.clear (ch, 0, numSamples);
+
+    int done = 0;
+    while (done < numSamples)
+    {
+        const int n = juce::jmin (numSamples - done, (int) sibGain.size());
+        std::fill (sibGain.begin(), sibGain.begin() + n, 1.0f);
+        std::fill (breathGain.begin(), breathGain.begin() + n, 1.0f);
+        for (int ch = 0; ch < numCh; ++ch)
+            engines[(size_t) ch].process (buffer.getWritePointer (ch) + done, n, sibGain.data(), breathGain.data(), false);
         done += n;
     }
 }
@@ -292,21 +314,28 @@ void NdmEventCleanerProcessor::setStateInformation (const void* data, int sizeIn
 
     if (auto* node = xml->getChildByName ("NDMEVENTS"))
     {
+        // Tout ce qui vient d'un fichier de session est traité comme non fiable : bornes et types validés.
         auto list = std::make_unique<ndm::EventList>();
-        list->sampleRate = node->getDoubleAttribute ("rate", 44100.0);
+        const double rate = node->getDoubleAttribute ("rate", 44100.0);
+        list->sampleRate = (rate >= 8000.0 && rate <= 384000.0) ? rate : 44100.0;
         list->firstSample = node->getStringAttribute ("first").getLargeIntValue();
-        list->lengthSamples = node->getStringAttribute ("length").getLargeIntValue();
-        list->overviewHop = node->getIntAttribute ("hop", 256);
+        list->lengthSamples = juce::jmax<int64_t> (0, node->getStringAttribute ("length").getLargeIntValue());
+        const int hopIn = node->getIntAttribute ("hop", 256);
+        list->overviewHop = (hopIn >= 16 && hopIn <= 65536) ? hopIn : 256;
         std::vector<float> offs; std::vector<bool> ens;
+        constexpr size_t kMaxEvents = 200000;
         for (auto* c : node->getChildWithTagNameIterator ("E"))
         {
+            if (list->events.size() >= kMaxEvents) break;
+            const int t = c->getIntAttribute ("t", 0);
             ndm::Event e;
-            e.type = (ndm::EventType) c->getIntAttribute ("t", 0);
             e.startSample = c->getStringAttribute ("s").getLargeIntValue();
             e.endSample = c->getStringAttribute ("e").getLargeIntValue();
-            e.peakDb = (float) c->getDoubleAttribute ("p", -120.0);
+            if (t < 0 || t > 2 || e.endSample < e.startSample) continue;       // ligne corrompue : ignorée
+            e.type = (ndm::EventType) t;
+            e.peakDb = (float) juce::jlimit (-200.0, 20.0, c->getDoubleAttribute ("p", -120.0));
             list->events.push_back (e);
-            offs.push_back ((float) c->getDoubleAttribute ("o", 0.0));
+            offs.push_back ((float) juce::jlimit (-12.0, 12.0, c->getDoubleAttribute ("o", 0.0)));
             ens.push_back (c->getIntAttribute ("en", 1) != 0);
         }
         juce::MemoryBlock mb;

@@ -222,19 +222,27 @@ private:
         const double a0 = 1.0 + alpha;
         const double b0 = (1.0 + cw) * 0.5 / a0, b1 = -(1.0 + cw) / a0, b2 = b0;
         const double a1 = -2.0 * cw / a0, a2 = (1.0 - alpha) / a0;
-        std::vector<double> cs ((size_t) n + 1, 0.0);
-        double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-        for (int64_t i = 0; i < n; ++i)
+        // sommes cumulées de l'énergie, une valeur par bloc de kDec échantillons (mémoire /kDec ; bornes des
+        // fenêtres arrondies au bloc : erreur <= 4 échantillons sur des fenêtres de 88 à 880)
+        constexpr int64_t kDec = 4;
+        const int64_t nBlocks = n / kDec;
+        std::vector<double> cs ((size_t) nBlocks + 1, 0.0);
+        double x1 = 0, x2 = 0, y1 = 0, y2 = 0, acc = 0.0;
+        for (int64_t i = 0; i < nBlocks * kDec; ++i)
         {
-            const double xi = (double) x[i];
+            const double xi = std::isfinite (x[i]) ? (double) x[i] : 0.0;   // un NaN/Inf d'entrée ne doit pas empoisonner le filtre
             const double y = b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
             x2 = x1; x1 = xi; y2 = y1; y1 = y;
-            cs[(size_t) i + 1] = cs[(size_t) i] + y * y;
+            acc += y * y;
+            if ((i + 1) % kDec == 0) cs[(size_t) ((i + 1) / kDec)] = acc;
         }
         auto mean = [&] (int64_t a, int64_t b) -> double      // énergie moyenne sur [a, b)
         {
-            a = std::max<int64_t> (0, a); b = std::min<int64_t> (n, b);
-            return b > a ? (cs[(size_t) b] - cs[(size_t) a]) / (double) (b - a) : 0.0;
+            a = std::max<int64_t> (0, a); b = std::min<int64_t> (nBlocks * kDec, b);
+            int64_t ka = a / kDec, kb = b / kDec;
+            if (kb <= ka) kb = ka + 1;
+            if (kb > nBlocks) return 0.0;
+            return (cs[(size_t) kb] - cs[(size_t) ka]) / (double) ((kb - ka) * kDec);
         };
 
         const int64_t w2 = std::max<int64_t> (4, (int64_t) (0.002 * sr));
